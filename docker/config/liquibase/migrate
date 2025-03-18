@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Check if Liquibase is installed
+if ! command -v liquibase &>/dev/null; then
+	echo "❌ Liquibase not found. Make sure it's installed and in PATH."
+	exit 1
+fi
+
+RUN_GENERATE=true
+RUN_UPDATE=true
+
+# Parse command-line arguments
+for arg in "$@"; do
+	case $arg in
+	-g | --generate)
+		RUN_UPDATE=false
+		shift
+		;;
+	-u | --update)
+		RUN_GENERATE=false
+		shift
+		;;
+	esac
+done
+
+if [ "$RUN_GENERATE" = true ]; then
+	printf "\n📸 Taking database snapshot...\n"
+	liquibase snapshot \
+		--snapshot-format=json \
+		--output-file=liquibase-snapshot.json
+
+	printf "\n🔄 Generating new changelog...\n"
+	liquibase diff-changelog \
+		--changelog-file=changelog/changelog-"$(date +%Y%m%d-%H%M%S)".sql \
+		--reference-url="offline:postgresql?snapshot=liquibase-snapshot.json"
+
+	printf "\n✅ Liquibase migration ready!\n"
+fi
+
+if [ "$RUN_UPDATE" = true ]; then
+	printf "\n🚀 Applying database changes...\n"
+	liquibase update
+	printf "\n✅ Liquibase migration complete!\n"
+fi
