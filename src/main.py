@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -15,11 +16,11 @@ is_prod = env == "prod"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await database.initialize()
-    logger.info("Application started")
+    logger.info(f"Application started for process {os.getpid()}")
 
     yield
     await database.close()
-    logger.info("Application stopped")
+    logger.info(f"Application stopped for process {os.getpid()}")
 
 
 app = FastAPI(

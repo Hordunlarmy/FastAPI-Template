@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "c54"
+name = "app"
 version = "0.1.0"
 description = ""
 authors = ["Hordunlarmy <Hordunlarmy@gmail.com>"]
@@ -12,7 +12,12 @@ uvicorn = {extras = ["standard"], version = "^0.34.0"}
 fastapi = "^0.115.11"
 python-decouple = "^3.8"
 itsdangerous = "^2.2.0"
-
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+pyjwt = "^2.10.1"
+python-jose = {extras = ["cryptography"], version = "^3.4.0"}
+python-multipart = "^0.0.20"
+bcrypt = ">=3.2.2,<4.0"
+aiohttp = "^3.11.16"
 
 [build-system]
 requires = ["poetry-core"]

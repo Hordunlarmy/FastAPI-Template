@@ -2,7 +2,7 @@ FROM liquibase/liquibase:latest
 
 USER root
 
-COPY docker/config/liquibase/migrate /usr/local/bin/migrate
+COPY docker/liquibase/migrate.sh /usr/local/bin/migrate
 RUN chmod +x /usr/local/bin/migrate
 
 USER liquibase
