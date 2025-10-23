@@ -2,21 +2,22 @@ services:
   app:
     build:
       context: .
-      dockerfile: docker/app/Dockerfile
+      dockerfile: ./infra/docker/app/Dockerfile
     image: ${PROJECT_NAME}
     ports:
-      - "${APP_PORT}:${APP_PORT}"
+      - "${APP_PORT}:8000"
     volumes:
-      - .:/app
+      - ./src:/app/src
+      - ./storage:/app/storage
     environment:
       - ENV=${ENV:-dev}
     env_file:
-      - profiles/${ENV:-dev}/.env.app
+      - .envs/${ENV:-dev}/.env.app
     restart: always
     depends_on:
       - database
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost ${APP_PORT} || exit 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/ping"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -28,20 +29,17 @@ services:
         max-file: "5"
 
   database:
-    image: postgres:latest
+    image: postgres:17
     restart: always
     ports:
       - "${POSTGRES_PORT}:5432"
     environment:
       - ENV=${ENV:-dev}
     env_file:
-      - profiles/${ENV:-dev}/.env.database
+      - .envs/${ENV:-dev}/.env.database
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./schema/init-db.sql:/docker-entrypoint-initdb.d/01-init-db.sql
-      - ./schema/triggers.sql:/docker-entrypoint-initdb.d/02-triggers.sql
-      - ./schema/init-data.sql:/docker-entrypoint-initdb.d/03-init-data.sql
-      - ./schema/${DUMP_ENV:-dev}-dump.sql:/docker-entrypoint-initdb.d/04-${DUMP_ENV:-dev}-dump.sql
+      - ./data/${ENV:-prod}/postgres:/var/lib/postgresql/data
+      - ./schema:/schema
     command: postgres -c log_min_messages=notice -c logging_collector=off -c log_destination=stderr
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-postgres}"]
@@ -55,32 +53,68 @@ services:
         max-size: "1mb"
         max-file: "5"
 
-  liquibase:
-    image: horduntech/customs:liquibase
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "${MINIO_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
     environment:
-      - ENV=${ENV:-dev}
+      - ENV=${ENV:-prod}
     env_file:
-      - profiles/${ENV:-dev}/.env.liquibase
+      - .envs/${ENV:-prod}/.env.minio
     volumes:
-      - ./docker/liquibase/changelog:/liquibase/changelog
-      - ./docker/liquibase/liquibase.properties:/liquibase/liquibase.properties:ro
-      - ./schema:/liquibase/schema:ro
-      - ./docker/liquibase/migrate.sh:/liquibase/migrate
-    depends_on:
-      - database
-    entrypoint: [ "sh", "-c", "/liquibase/migrate && tail -f /dev/null" ]
-    restart: unless-stopped
+      - ./data/${ENV:-prod}/minio:/data
+    command: server --console-address ":9001" /data
+    restart: always
     healthcheck:
-      test: ["CMD-SHELL", "liquibase status --verbose"]
+      test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:8.2.1
+    ports:
+      - "${REDIS_PORT}:6379"
+    environment:
+      - ENV=${ENV:-prod}
+    env_file:
+      - ./.envs/${ENV:-prod}/.env.redis
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --appendfsync everysec
+      --dir /data
+    volumes:
+      - ./data/${ENV:-prod}/redis:/data
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "90k"
-        max-file: "5"
 
-volumes:
-  postgres_data:
+  atlas:
+    image: arigaio/atlas:latest
+    restart: "no"
+    environment:
+      - ENV=${ENV:-local}
+    env_file:
+      - ./.envs/${ENV:-local}/.env.atlas
+    volumes:
+      - ./config/atlas:/config/atlas
+      - ./schema:/schema
+      - ./migrations:/migrations
+    command: >
+      migrate apply
+      --config file:///config/atlas/atlas.hcl
+      --env ${ENV:-local}
+
