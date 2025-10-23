@@ -1,11 +1,13 @@
 import asyncio
+import contextvars
 from contextlib import asynccontextmanager
 
 import asyncpg
 from decouple import UndefinedValueError, config
+from oguild.logs import Logger
+from oguild.response import Error
 
-from src.core.logger import Logger
-from src.core.response import CustomError
+current_connection = contextvars.ContextVar("current_connection", default=None)
 
 
 class Database:
@@ -29,7 +31,7 @@ class Database:
                 f"{db_port}/{db_name}"
             )
 
-    async def initialize(self, retries=10, delay=3):
+    async def initialize(self, retries=20, delay=20):
         """Initialize the connection pool on startup with retry logic."""
         for attempt in range(1, retries + 1):
             try:
@@ -69,42 +71,42 @@ class Database:
 
     @asynccontextmanager
     async def _get_connection(self):
-        """Acquire a connection from the pool."""
         connection = None
         try:
             connection = await self.pool.acquire()
             yield connection
-        except asyncpg.PostgresError as e:
-            self.logger.error(f"Connection error: {e}")
-            yield None
         finally:
             if connection:
                 await self.pool.release(connection)
 
     async def commit(self, query, params=None):
         """Execute a query that modifies data (INSERT, UPDATE, DELETE)."""
-        async with self._get_connection() as connection:
-            if connection is None:
-                self.logger.error("Failed to get a database connection.")
-                return None
+        connection = current_connection.get(None)
 
-            try:
-                if "RETURNING" in query.upper():
-                    result = (
-                        await connection.fetchrow(query, *params)
-                        if params
-                        else await connection.fetchrow(query)
-                    )
-                    return dict(result) if result else None
-                (
-                    await connection.execute(query, *params)
-                    if params
-                    else await connection.execute(query)
-                )
-                return None
-            except asyncpg.PostgresError as e:
-                self.logger.error(f"Commit error: {e}")
-                raise CustomError(f"Database error: {e}", 500)
+        if connection is None:
+            async with self._get_connection() as connection:
+                if connection is None:
+                    self.logger.error("Failed to get a database connection.")
+                    return None
+                return await self._execute_query(connection, query, params)
+        else:
+            return await self._execute_query(connection, query, params)
+
+    async def _execute_query(self, connection, query, params=None):
+        """Helper to execute a query using the given connection."""
+        if "RETURNING" in query.upper():
+            result = (
+                await connection.fetchrow(query, *params)
+                if params
+                else await connection.fetchrow(query)
+            )
+            return dict(result) if result else None
+        else:
+            if params:
+                await connection.execute(query, *params)
+            else:
+                await connection.execute(query)
+            return None
 
     async def select(self, query, params=None, format=True):
         """Execute a SELECT query and return results."""
@@ -113,33 +115,34 @@ class Database:
                 self.logger.error("Failed to get a database connection.")
                 return False
 
-            try:
-                records = (
-                    await connection.fetch(query, *params)
-                    if params
-                    else await connection.fetch(query)
-                )
-                col_names = records[0].keys() if records else []
+            records = (
+                await connection.fetch(query, *params)
+                if params
+                else await connection.fetch(query)
+            )
+            col_names = records[0].keys() if records else []
 
-                if format:
-                    return [dict(record) for record in records]
-                return (col_names, [tuple(record) for record in records])
-            except asyncpg.PostgresError as e:
-                self.logger.error(f"Select error: {e}")
-                raise CustomError(f"Database error: {e}", 500)
+            if format:
+                return [dict(record) for record in records]
+            return (col_names, [tuple(record) for record in records])
 
     @asynccontextmanager
     async def transaction(self):
         """Provide a transactional scope using asyncpg."""
-        async with self._get_connection() as connection:
-            if connection is None:
-                raise CustomError("Failed to acquire DB connection", 500)
+        conn = current_connection.get()
+        if conn is not None:
+            yield conn
+            return
 
+        async with self.pool.acquire() as connection:
             transaction = connection.transaction()
             await transaction.start()
+            token = current_connection.set(connection)
             try:
-                yield
+                yield connection
                 await transaction.commit()
             except Exception as e:
                 await transaction.rollback()
                 raise e
+            finally:
+                current_connection.reset(token)
